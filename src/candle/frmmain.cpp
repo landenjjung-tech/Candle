@@ -186,7 +186,7 @@ void frmMain::initVariables()
     m_toolChangePopupShown = false;
     m_toolChangeWorkX = 0;
     m_toolChangeWorkY = 0;
-    m_toolChangeSafeMachineZ = 0;
+    m_toolChangeParkMachineZ = 0;
     m_toolChangeExpectWorkZ = 0;
 
 #ifdef Q_OS_WIN
@@ -3606,6 +3606,7 @@ void frmMain::storeSettings()
     set->setValue("toolChangeUseCommandsConfirm", m_settings->toolChangeUseCommandsConfirm());
     set->setValue("toolChangeAutoPause", m_settings->toolChangeAutoPause());
     set->setValue("toolChangeSafeZ", m_settings->toolChangeSafeZ());
+    set->setValue("toolChangeZTopClearance", m_settings->toolChangeZTopClearance());
     set->setValue("toolChangeProbeOnResume", m_settings->toolChangeProbeOnResume());
     set->setValue("referenceXPlus", m_settings->referenceXPlus());
     set->setValue("referenceYPlus", m_settings->referenceYPlus());
@@ -3790,6 +3791,7 @@ void frmMain::restoreSettings()
         m_settings->setToolChangeUseCommandsConfirm(set->value("toolChangeUseCommandsConfirm").toBool());
         m_settings->setToolChangeAutoPause(set->value("toolChangeAutoPause", false).toBool());
         m_settings->setToolChangeSafeZ(set->value("toolChangeSafeZ", 5).toDouble());
+        m_settings->setToolChangeZTopClearance(set->value("toolChangeZTopClearance", 1).toDouble());
         m_settings->setToolChangeProbeOnResume(set->value("toolChangeProbeOnResume", true).toBool());
         m_settings->setReferenceXPlus(set->value("referenceXPlus", false).toBool());
         m_settings->setReferenceYPlus(set->value("referenceYPlus", false).toBool());
@@ -6204,11 +6206,11 @@ void frmMain::showToolChangePopup()
     QString text = tr("Paused: tool change (M6) at line %1.").arg(m_toolChangeLine + 1);
     if (!command.trimmed().isEmpty())
         text += "\n" + command.trimmed();
-    text += "\n\n" + tr("The spindle is off. Z is at or above the safe height and X/Y are at machine home.");
+    text += "\n\n" + tr("The spindle is off. X/Y are at work home (X0 Y0). Z is raised to the top of travel.");
     text += "\n" + tr("Change the bit, then press the Pause button to resume.");
     text += "\n" + tr("The job will not resume until you press Pause.");
     if (m_settings->toolChangeProbeOnResume()) {
-        text += "\n\n" + tr("Resume re-probes Z without moving X/Y, then returns to the saved work X/Y. X/Y work offsets are not changed.");
+        text += "\n\n" + tr("Resume moves to the saved work X/Y, re-probes Z there, and does not change X/Y work offsets.");
     } else {
         text += "\n\n" + tr("Resume returns to the saved work X/Y without probing and without changing X/Y work offsets.");
     }
@@ -6238,25 +6240,55 @@ QString frmMain::formatToolChangeCoord(double value) const
     return QString::number(value, 'f', toolChangeUseInches() ? 4 : 3);
 }
 
+double frmMain::toolChangeParkZTarget()
+{
+    // $22=1 means the machine was homed and G53 Z0 is the top of Z travel.
+    // Anything else (setting not read, or homing off) has no known top, so park at G53 Z0.
+    // The returned value is the G53 Z word in the active program units. The stored
+    // park position is in status-report units ($13), which is what txtMPos shows.
+    const QMap<int, float> settings = m_settings->deviceSettings();
+    const bool homing = settings.contains(22) && settings.value(22) != 0.0f;
+    const double targetMm = homing ? -qMax(0.0, m_settings->toolChangeZTopClearance()) : 0.0;
+    m_toolChangeParkMachineZ = m_settings->units() == 0 ? targetMm : targetMm / 25.4;
+    return toolChangeUseInches() ? targetMm / 25.4 : targetMm;
+}
+
 QString frmMain::toolChangeProbeCommands()
 {
     // Candle's built-in "Probe Z" user command: fast probe, retract, slow probe,
     // G92 Z only, then a short retract. No X/Y words, so X/Y work offsets stay put.
+    // The fast stroke is extended so a probe that starts near the top of travel
+    // still searches about 30 mm past work Z0.
     const bool inches = toolChangeUseInches();
     const double scale = inches ? (1.0 / 25.4) : 1.0;
     auto coord = [scale, inches](double mm) {
         return QString::number(mm * scale, 'f', inches ? 4 : 3);
     };
-    m_toolChangeExpectWorkZ = 5.0 * scale;
+
+    // txtWPos is in status-report units. The plunge distance is in the units
+    // the probe command selects, and it must still reach about 30 mm past work Z0.
+    double workZMm = toMetric(ui->txtWPosZ->value());
+    if (workZMm < 0)
+        workZMm = 0;
+    const double fastMm = qMax(30.0, workZMm + 30.0);
+
+    m_toolChangeExpectWorkZ = m_settings->units() == 0 ? 5.0 : 5.0 / 25.4;
 
     return QString("%1G91\nG38.2Z-%2F%3\nG0Z%4\nG38.2Z-%5F%6\nG92Z0\nG91G0Z%7")
         .arg(inches ? "G20" : "G21")
-        .arg(coord(30))
+        .arg(coord(fastMm))
         .arg(coord(100))
         .arg(coord(1))
         .arg(coord(2))
         .arg(coord(10))
         .arg(coord(5));
+}
+
+void frmMain::sendToolChangeReturnXY()
+{
+    sendToolChangeCommand(QString("G90G0X%1Y%2")
+        .arg(formatToolChangeCoord(m_toolChangeWorkX))
+        .arg(formatToolChangeCoord(m_toolChangeWorkY)));
 }
 
 void frmMain::sendToolChangeCommand(const QString &command)
@@ -6268,15 +6300,18 @@ void frmMain::sendToolChangeCommand(const QString &command)
 bool frmMain::toolChangePositionReached() const
 {
     const double tol = toolChangeTolerance();
+    // Park Z and the post-probe Z are checked against the status report ($13).
+    const double reportTol = m_settings->units() == 0 ? 0.05 : 0.002;
     switch (m_toolChangePhase) {
     case ToolChangeLiftZ:
         return qAbs(ui->txtWPosZ->value() - m_settings->toolChangeSafeZ()) <= tol;
     case ToolChangeGoHome:
-        return qAbs(ui->txtMPosX->value()) <= tol && qAbs(ui->txtMPosY->value()) <= tol;
+        return qAbs(ui->txtWPosX->value()) <= tol && qAbs(ui->txtWPosY->value()) <= tol;
+    case ToolChangeRaiseParkZ:
+        return qAbs(ui->txtMPosZ->value() - m_toolChangeParkMachineZ) <= reportTol;
     case ToolChangeProbe:
-        return qAbs(ui->txtWPosZ->value() - m_toolChangeExpectWorkZ) <= tol;
-    case ToolChangeReturnZ:
-        return qAbs(ui->txtMPosZ->value() - m_toolChangeSafeMachineZ) <= tol;
+        return qAbs(ui->txtWPosZ->value() - m_toolChangeExpectWorkZ) <= reportTol;
+    case ToolChangeMoveToProbe:
     case ToolChangeReturnXY:
         return qAbs(ui->txtWPosX->value() - m_toolChangeWorkX) <= tol
             && qAbs(ui->txtWPosY->value() - m_toolChangeWorkY) <= tol;
@@ -6377,49 +6412,49 @@ void frmMain::advanceToolChangeAutoPause()
         break;
     }
     case ToolChangeSpindleOff:
-        // Never lower Z on the way to a tool change. Already-high Z stays put.
+        // Never lower Z to reach Safe Z. Already-high Z stays put so the bit
+        // does not drag across the board on the way to work X0 Y0.
         if (ui->txtWPosZ->value() < m_settings->toolChangeSafeZ() - toolChangeTolerance()) {
             m_toolChangePhase = ToolChangeLiftZ;
             sendToolChangeCommand(QString("G90G0Z%1")
                 .arg(formatToolChangeCoord(m_settings->toolChangeSafeZ())));
         } else {
-            m_toolChangeSafeMachineZ = ui->txtMPosZ->value();
             m_toolChangePhase = ToolChangeGoHome;
-            sendToolChangeCommand("G53G90G0X0Y0");
+            sendToolChangeCommand("G90G0X0Y0");
         }
         break;
     case ToolChangeLiftZ:
-        m_toolChangeSafeMachineZ = ui->txtMPosZ->value();
         m_toolChangePhase = ToolChangeGoHome;
-        sendToolChangeCommand("G53G90G0X0Y0");
+        sendToolChangeCommand("G90G0X0Y0");
         break;
     case ToolChangeGoHome:
+        m_toolChangePhase = ToolChangeRaiseParkZ;
+        sendToolChangeCommand(QString("G53G90G0Z%1")
+            .arg(formatToolChangeCoord(toolChangeParkZTarget())));
+        break;
+    case ToolChangeRaiseParkZ:
         m_toolChangePhase = ToolChangeAwaitUser;
         updateControlsState();
         m_toolChangeAdvancing = false;
         QMetaObject::invokeMethod(this, "showToolChangePopup", Qt::QueuedConnection);
         return;
     case ToolChangeResumeM5:
-        if (m_settings->toolChangeProbeOnResume()) {
-            m_toolChangePhase = ToolChangeProbe;
-            sendCommands(toolChangeProbeCommands(), -1);
-            m_toolChangeSettledAfterSample = m_statusSample;
-        } else {
-            m_toolChangePhase = ToolChangeReturnZ;
-            sendToolChangeCommand(QString("G53G90G0Z%1")
-                .arg(formatToolChangeCoord(m_toolChangeSafeMachineZ)));
-        }
+        // Probe at the saved work X/Y, not at work home. Z stays at the park
+        // height for this move so the bit clears the board.
+        if (m_settings->toolChangeProbeOnResume())
+            m_toolChangePhase = ToolChangeMoveToProbe;
+        else
+            m_toolChangePhase = ToolChangeReturnXY;
+        sendToolChangeReturnXY();
+        break;
+    case ToolChangeMoveToProbe:
+        m_toolChangePhase = ToolChangeProbe;
+        sendCommands(toolChangeProbeCommands(), -1);
+        m_toolChangeSettledAfterSample = m_statusSample;
         break;
     case ToolChangeProbe:
-        m_toolChangePhase = ToolChangeReturnZ;
-        sendToolChangeCommand(QString("G53G90G0Z%1")
-            .arg(formatToolChangeCoord(m_toolChangeSafeMachineZ)));
-        break;
-    case ToolChangeReturnZ:
         m_toolChangePhase = ToolChangeReturnXY;
-        sendToolChangeCommand(QString("G90G0X%1Y%2")
-            .arg(formatToolChangeCoord(m_toolChangeWorkX))
-            .arg(formatToolChangeCoord(m_toolChangeWorkY)));
+        sendToolChangeReturnXY();
         break;
     case ToolChangeReturnXY:
         if (!m_toolChangeParserState.trimmed().isEmpty()) {

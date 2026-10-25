@@ -699,6 +699,16 @@ void frmSettings::setToolChangeSafeZ(double value)
     ui->txtToolChangeSafeZ->setValue(value);
 }
 
+double frmSettings::toolChangeZTopClearance()
+{
+    return ui->txtToolChangeZTopClearance->value();
+}
+
+void frmSettings::setToolChangeZTopClearance(double value)
+{
+    ui->txtToolChangeZTopClearance->setValue(value);
+}
+
 bool frmSettings::toolChangeProbeOnResume()
 {
     return ui->chkToolChangeProbeOnResume->isChecked();
@@ -1043,6 +1053,7 @@ void frmSettings::setDefaultSettings()
     ui->chkToolChangeUseCommandsConfirm->setChecked(false);
     ui->chkToolChangeAutoPause->setChecked(false);
     ui->txtToolChangeSafeZ->setValue(5);
+    ui->txtToolChangeZTopClearance->setValue(1);
     ui->chkToolChangeProbeOnResume->setChecked(true);
     setLanguage("en");
 }

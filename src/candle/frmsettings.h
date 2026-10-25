@@ -76,6 +76,7 @@ class frmSettings : public QDialog
     Q_PROPERTY(bool toolChangeUseCommandsConfirm READ toolChangeUseCommandsConfirm WRITE setToolChangeUseCommandsConfirm)
     Q_PROPERTY(bool toolChangeAutoPause READ toolChangeAutoPause WRITE setToolChangeAutoPause)
     Q_PROPERTY(double toolChangeSafeZ READ toolChangeSafeZ WRITE setToolChangeSafeZ)
+    Q_PROPERTY(double toolChangeZTopClearance READ toolChangeZTopClearance WRITE setToolChangeZTopClearance)
     Q_PROPERTY(bool toolChangeProbeOnResume READ toolChangeProbeOnResume WRITE setToolChangeProbeOnResume)
     Q_PROPERTY(QString language READ language WRITE setLanguage)
     Q_PROPERTY(bool units READ units WRITE setUnits)
@@ -196,6 +197,8 @@ public:
     void setToolChangeAutoPause(bool value);
     double toolChangeSafeZ();
     void setToolChangeSafeZ(double value);
+    double toolChangeZTopClearance();
+    void setToolChangeZTopClearance(double value);
     bool toolChangeProbeOnResume();
     void setToolChangeProbeOnResume(bool value);
     QString language();

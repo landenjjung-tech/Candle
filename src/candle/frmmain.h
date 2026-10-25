@@ -313,10 +313,11 @@ private:
         ToolChangeSpindleOff,
         ToolChangeLiftZ,
         ToolChangeGoHome,
+        ToolChangeRaiseParkZ,
         ToolChangeAwaitUser,
         ToolChangeResumeM5,
+        ToolChangeMoveToProbe,
         ToolChangeProbe,
-        ToolChangeReturnZ,
         ToolChangeReturnXY,
         ToolChangeRestore,
         ToolChangeFailed
@@ -463,7 +464,7 @@ private:
     int m_reportedSpindleSpeed;
     int m_statusSample;
 
-    // M6 auto-pause (machine home, safe Z, optional probe). Inactive unless enabled.
+    // M6 auto-pause (work home, safe Z, park Z, optional probe). Inactive unless enabled.
     ToolChangePhase m_toolChangePhase;
     int m_toolChangeLine;
     int m_toolChangeSettledAfterSample;
@@ -471,7 +472,7 @@ private:
     bool m_toolChangePopupShown;
     double m_toolChangeWorkX;
     double m_toolChangeWorkY;
-    double m_toolChangeSafeMachineZ;
+    double m_toolChangeParkMachineZ;
     double m_toolChangeExpectWorkZ;
     QString m_toolChangeParserState;
 
@@ -600,7 +601,9 @@ private:
     bool toolChangeUseInches() const;
     double toolChangeTolerance() const;
     QString formatToolChangeCoord(double value) const;
+    double toolChangeParkZTarget();
     QString toolChangeProbeCommands();
+    void sendToolChangeReturnXY();
     void sendToolChangeCommand(const QString &command);
     void completeTransfer();
     QString getLineInitCommands(int row);
