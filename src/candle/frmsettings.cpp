@@ -679,6 +679,36 @@ void frmSettings::setToolChangePause(bool pause)
     ui->chkToolChangePause->setChecked(pause);
 }
 
+bool frmSettings::toolChangeAutoPause()
+{
+    return ui->chkToolChangeAutoPause->isChecked();
+}
+
+void frmSettings::setToolChangeAutoPause(bool value)
+{
+    ui->chkToolChangeAutoPause->setChecked(value);
+}
+
+double frmSettings::toolChangeSafeZ()
+{
+    return ui->txtToolChangeSafeZ->value();
+}
+
+void frmSettings::setToolChangeSafeZ(double value)
+{
+    ui->txtToolChangeSafeZ->setValue(value);
+}
+
+bool frmSettings::toolChangeProbeOnResume()
+{
+    return ui->chkToolChangeProbeOnResume->isChecked();
+}
+
+void frmSettings::setToolChangeProbeOnResume(bool value)
+{
+    ui->chkToolChangeProbeOnResume->setChecked(value);
+}
+
 QString frmSettings::language()
 {
     return ui->cboLanguage->currentData().toString();
@@ -1011,6 +1041,9 @@ void frmSettings::setDefaultSettings()
     ui->chkToolChangePause->setChecked(false);
     ui->chkToolChangeUseCommands->setChecked(false);
     ui->chkToolChangeUseCommandsConfirm->setChecked(false);
+    ui->chkToolChangeAutoPause->setChecked(false);
+    ui->txtToolChangeSafeZ->setValue(5);
+    ui->chkToolChangeProbeOnResume->setChecked(true);
     setLanguage("en");
 }
 
