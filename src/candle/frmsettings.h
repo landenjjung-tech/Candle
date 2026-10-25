@@ -74,6 +74,10 @@ class frmSettings : public QDialog
     Q_PROPERTY(bool toolChangePause READ toolChangePause WRITE setToolChangePause)
     Q_PROPERTY(bool toolChangeUseCommands READ toolChangeUseCommands WRITE setToolChangeUseCommands)
     Q_PROPERTY(bool toolChangeUseCommandsConfirm READ toolChangeUseCommandsConfirm WRITE setToolChangeUseCommandsConfirm)
+    Q_PROPERTY(bool toolChangeAutoPause READ toolChangeAutoPause WRITE setToolChangeAutoPause)
+    Q_PROPERTY(double toolChangeSafeZ READ toolChangeSafeZ WRITE setToolChangeSafeZ)
+    Q_PROPERTY(double toolChangeZTopClearance READ toolChangeZTopClearance WRITE setToolChangeZTopClearance)
+    Q_PROPERTY(bool toolChangeProbeOnResume READ toolChangeProbeOnResume WRITE setToolChangeProbeOnResume)
     Q_PROPERTY(QString language READ language WRITE setLanguage)
     Q_PROPERTY(bool units READ units WRITE setUnits)
     Q_PROPERTY(int rapidSpeed READ rapidSpeed WRITE setRapidSpeed)
@@ -189,6 +193,14 @@ public:
     void setToolChangeUseCommands(bool value);
     bool toolChangeUseCommandsConfirm();
     void setToolChangeUseCommandsConfirm(bool value);
+    bool toolChangeAutoPause();
+    void setToolChangeAutoPause(bool value);
+    double toolChangeSafeZ();
+    void setToolChangeSafeZ(double value);
+    double toolChangeZTopClearance();
+    void setToolChangeZTopClearance(double value);
+    bool toolChangeProbeOnResume();
+    void setToolChangeProbeOnResume(bool value);
     QString language();
     void setLanguage(QString language);
     QVector3D machineBounds();

@@ -275,6 +275,7 @@ private slots:
     void onActServiceProfilesSelected(bool checked);
     void onBeforeScriptStart(QScriptEngine &engine);
     void onTableHistoryChanged(QStringList history, int currentIndex);
+    void showToolChangePopup();
 
     void updateHeightMapInterpolationDrawer(bool reset = false);
     void placeVisualizerButtons();
@@ -303,6 +304,23 @@ private:
         SenderStopping = 3,
         SenderStopped = 4,
         SenderChangingTool = 5
+    };
+
+    // File M6 auto-pause. Inactive leaves the legacy tool-change path unchanged.
+    enum ToolChangePhase {
+        ToolChangeInactive = 0,
+        ToolChangeWaitStop,
+        ToolChangeSpindleOff,
+        ToolChangeLiftZ,
+        ToolChangeGoHome,
+        ToolChangeRaiseParkZ,
+        ToolChangeAwaitUser,
+        ToolChangeResumeM5,
+        ToolChangeMoveToProbe,
+        ToolChangeProbe,
+        ToolChangeReturnXY,
+        ToolChangeRestore,
+        ToolChangeFailed
     };
 
     enum DeviceState {
@@ -443,6 +461,20 @@ private:
 
     // Spindle
     bool m_spindleCW;
+    int m_reportedSpindleSpeed;
+    int m_statusSample;
+
+    // M6 auto-pause (work home, safe Z, park Z, optional probe). Inactive unless enabled.
+    ToolChangePhase m_toolChangePhase;
+    int m_toolChangeLine;
+    int m_toolChangeSettledAfterSample;
+    bool m_toolChangeAdvancing;
+    bool m_toolChangePopupShown;
+    double m_toolChangeWorkX;
+    double m_toolChangeWorkY;
+    double m_toolChangeParkMachineZ;
+    double m_toolChangeExpectWorkZ;
+    QString m_toolChangeParserState;
 
     // Jog
     QVector4D m_jogVector;
@@ -558,6 +590,21 @@ private:
     int buttonSize();
     void setSenderState(SenderState state);
     void setDeviceState(DeviceState state);
+    void beginToolChangeAutoPause(int tableIndex);
+    void advanceToolChangeAutoPause();
+    void startToolChangeResume();
+    void finishToolChangeAutoPause();
+    void failToolChangeAutoPause(const QString &reason);
+    void cancelToolChangeAutoPause();
+    bool toolChangeStepSettled() const;
+    bool toolChangePositionReached() const;
+    bool toolChangeUseInches() const;
+    double toolChangeTolerance() const;
+    QString formatToolChangeCoord(double value) const;
+    double toolChangeParkZTarget();
+    QString toolChangeProbeCommands();
+    void sendToolChangeReturnXY();
+    void sendToolChangeCommand(const QString &command);
     void completeTransfer();
     QString getLineInitCommands(int row);
     void processSettingsResponse(QString response);

@@ -886,6 +886,139 @@ QGroupBox {
                  </widget>
                 </item>
                 <item>
+                 <widget class="QCheckBox" name="chkToolChangeAutoPause">
+                  <property name="toolTip">
+                   <string>On each M6 in a running file: stop at the line, turn the spindle off, raise to safe Z, go to work X0 Y0, raise Z to the top of travel, and wait until you press Pause. The job never resumes by itself.</string>
+                  </property>
+                  <property name="text">
+                   <string>Auto-pause at every tool change (M6)</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <layout class="QHBoxLayout" name="layoutToolChangeSafeZ">
+                  <item>
+                   <widget class="QLabel" name="lblToolChangeSafeZ">
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="toolTip">
+                     <string>Work-coordinate Z reached after the spindle is off and before the move to work X0 Y0. The tool is not lowered to get here, so the bit does not drag across the board.</string>
+                    </property>
+                    <property name="text">
+                     <string>Safe Z (work):</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QDoubleSpinBox" name="txtToolChangeSafeZ">
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="toolTip">
+                     <string>Work-coordinate Z reached after the spindle is off and before the move to work X0 Y0. The tool is not lowered to get here, so the bit does not drag across the board.</string>
+                    </property>
+                    <property name="decimals">
+                     <number>3</number>
+                    </property>
+                    <property name="minimum">
+                     <double>-1000.000000000000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>1000.000000000000000</double>
+                    </property>
+                    <property name="value">
+                     <double>5.000000000000000</double>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <spacer name="horizontalSpacerToolChangeSafeZ">
+                    <property name="orientation">
+                     <enum>Qt::Horizontal</enum>
+                    </property>
+                    <property name="sizeHint" stdset="0">
+                     <size>
+                      <width>40</width>
+                      <height>20</height>
+                     </size>
+                    </property>
+                   </spacer>
+                  </item>
+                 </layout>
+                </item>
+                <item>
+                 <layout class="QHBoxLayout" name="layoutToolChangeZTopClearance">
+                  <item>
+                   <widget class="QLabel" name="lblToolChangeZTopClearance">
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="toolTip">
+                     <string>Used only when GRBL homing is enabled ($22=1) and machine Z0 is the top. Park Z is G53 Z0 minus this clearance. When homing is not known, Z goes to G53 Z0.</string>
+                    </property>
+                    <property name="text">
+                     <string>Z top clearance:</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QDoubleSpinBox" name="txtToolChangeZTopClearance">
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
+                    <property name="toolTip">
+                     <string>Used only when GRBL homing is enabled ($22=1) and machine Z0 is the top. Park Z is G53 Z0 minus this clearance. When homing is not known, Z goes to G53 Z0.</string>
+                    </property>
+                    <property name="suffix">
+                     <string> mm</string>
+                    </property>
+                    <property name="decimals">
+                     <number>3</number>
+                    </property>
+                    <property name="minimum">
+                     <double>0.000000000000000</double>
+                    </property>
+                    <property name="maximum">
+                     <double>50.000000000000000</double>
+                    </property>
+                    <property name="value">
+                     <double>1.000000000000000</double>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <spacer name="horizontalSpacerToolChangeZTopClearance">
+                    <property name="orientation">
+                     <enum>Qt::Horizontal</enum>
+                    </property>
+                    <property name="sizeHint" stdset="0">
+                     <size>
+                      <width>40</width>
+                      <height>20</height>
+                     </size>
+                    </property>
+                   </spacer>
+                  </item>
+                 </layout>
+                </item>
+                <item>
+                 <widget class="QCheckBox" name="chkToolChangeProbeOnResume">
+                  <property name="enabled">
+                   <bool>false</bool>
+                  </property>
+                  <property name="toolTip">
+                   <string>On resume, return to the saved work X/Y at the park height, then run Candle's Z-probe cycle (fast G38.2 extended to reach from that height, slow G38.2, G92 Z only). X/Y are not moved during the probe and X/Y work offsets are not changed.</string>
+                  </property>
+                  <property name="text">
+                   <string>Re-probe Z on resume</string>
+                  </property>
+                  <property name="checked">
+                   <bool>true</bool>
+                  </property>
+                 </widget>
+                </item>
+                <item>
                  <widget class="QCheckBox" name="chkIgnoreErrors">
                   <property name="text">
                    <string>Ignore error responses</string>
@@ -2123,6 +2256,10 @@ segment size:</string>
   <tabstop>txtToolChangeCommands</tabstop>
   <tabstop>chkToolChangeUseCommandsConfirm</tabstop>
   <tabstop>chkToolChangePause</tabstop>
+  <tabstop>chkToolChangeAutoPause</tabstop>
+  <tabstop>txtToolChangeSafeZ</tabstop>
+  <tabstop>txtToolChangeZTopClearance</tabstop>
+  <tabstop>chkToolChangeProbeOnResume</tabstop>
   <tabstop>chkIgnoreErrors</tabstop>
   <tabstop>chkAutoLine</tabstop>
   <tabstop>cboFontSize</tabstop>
@@ -2261,6 +2398,86 @@ segment size:</string>
    <sender>chkSimplify</sender>
    <signal>toggled(bool)</signal>
    <receiver>txtSimplifyPrecision</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>chkToolChangeAutoPause</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>lblToolChangeSafeZ</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>chkToolChangeAutoPause</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>txtToolChangeSafeZ</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>chkToolChangeAutoPause</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>lblToolChangeZTopClearance</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>chkToolChangeAutoPause</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>txtToolChangeZTopClearance</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>368</x>
+     <y>42</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>chkToolChangeAutoPause</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>chkToolChangeProbeOnResume</receiver>
    <slot>setEnabled(bool)</slot>
    <hints>
     <hint type="sourcelabel">

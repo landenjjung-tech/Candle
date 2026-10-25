@@ -177,6 +177,17 @@ void frmMain::initVariables()
     m_sdRun = false;
 
     m_spindleCW = true;
+    m_reportedSpindleSpeed = -1;
+    m_statusSample = 0;
+    m_toolChangePhase = ToolChangeInactive;
+    m_toolChangeLine = -1;
+    m_toolChangeSettledAfterSample = 0;
+    m_toolChangeAdvancing = false;
+    m_toolChangePopupShown = false;
+    m_toolChangeWorkX = 0;
+    m_toolChangeWorkY = 0;
+    m_toolChangeParkMachineZ = 0;
+    m_toolChangeExpectWorkZ = 0;
 
 #ifdef Q_OS_WIN
     if (QSysInfo::windowsVersion() >= QSysInfo::WV_WINDOWS7) {
@@ -938,6 +949,7 @@ void frmMain::on_cmdFileSend_clicked()
 {
     if (m_currentModel->rowCount() == 1) return;
 
+    cancelToolChangeAutoPause();
     on_cmdFileReset_clicked();
 
     m_startTime.start();
@@ -971,11 +983,25 @@ void frmMain::on_cmdFilePause_clicked(bool checked)
     static SenderState s;
 
     if (checked) {
+        // Auto-pause owns the button until the user resumes or aborts.
+        if (m_toolChangePhase != ToolChangeInactive)
+            return;
         s = m_senderState;
         // setSenderState(SenderPaused);
         setSenderState(SenderPausing);
         ui->cmdFilePause->setEnabled(false);
     } else {
+        if (m_toolChangePhase == ToolChangeAwaitUser) {
+            startToolChangeResume();
+            updateControlsState();
+            return;
+        }
+        if (m_toolChangePhase == ToolChangeFailed) {
+            QMessageBox::warning(this, qApp->applicationDisplayName(),
+                tr("The tool change did not finish. Abort the job and restart from this line."));
+            updateControlsState();
+            return;
+        }
         if (m_senderState == SenderChangingTool) {
             setSenderState(SenderTransferring);
         } else {
@@ -988,6 +1014,7 @@ void frmMain::on_cmdFilePause_clicked(bool checked)
 void frmMain::on_cmdFileAbort_clicked()
 {
     ui->cmdFileAbort->setEnabled(false);
+    cancelToolChangeAutoPause();
 
     if ((m_senderState == SenderPaused) || (m_senderState == SenderChangingTool)) {
         sendCommand("M2", -1, m_settings->showUICommands(), false);
@@ -998,6 +1025,7 @@ void frmMain::on_cmdFileAbort_clicked()
 
 void frmMain::on_cmdFileReset_clicked()
 {
+    cancelToolChangeAutoPause();
     m_fileCommandIndex = 0;
     m_fileProcessedCommandIndex = 0;
     m_lastDrawnLineIndex = 0;
@@ -1969,8 +1997,9 @@ void frmMain::onConnectionDataReceived(QString data)
             ui->cmdCheck->setEnabled(state != DeviceRun && (m_senderState == SenderStopped));
             ui->cmdCheck->setChecked(state == DeviceCheck);
             ui->cmdHold->setChecked(state == DeviceHold0 || state == DeviceHold1 || state == DeviceQueue);
-            ui->cmdSpindle->setEnabled(state == DeviceHold0 || ((m_senderState != SenderTransferring) &&
-                (m_senderState != SenderStopping) && !m_sdRun));
+            ui->cmdSpindle->setEnabled(m_toolChangePhase == ToolChangeInactive &&
+                (state == DeviceHold0 || ((m_senderState != SenderTransferring) &&
+                (m_senderState != SenderStopping) && !m_sdRun)));
 
             // Update "elapsed time" timer
             if ((m_senderState == SenderTransferring) || (m_senderState == SenderStopping)) {
@@ -2262,6 +2291,8 @@ void frmMain::onConnectionDataReceived(QString data)
         static QRegExp fs("FS:([^,]*),([^,^|^>]*)");
         if (fs.indexIn(data) != -1) {
             auto spindleSpeed = fs.cap(2);
+            const double reportedSpeed = spindleSpeed.toDouble();
+            m_reportedSpindleSpeed = reportedSpeed > 0 ? qMax(1, int(reportedSpeed)) : 0;
             if (spindleSpeed != "0") {
                 if ((!m_timerToolAnimation.isActive())) {
                     m_timerToolAnimation.start(25, this);
@@ -2275,7 +2306,11 @@ void frmMain::onConnectionDataReceived(QString data)
         }
 
         // Store device state
+        m_statusSample++;
         setDeviceState(state);
+
+        if (m_toolChangePhase != ToolChangeInactive)
+            advanceToolChangeAutoPause();
 
         // Update continuous jog
         jogContinuous();
@@ -2548,33 +2583,39 @@ void frmMain::onConnectionDataReceived(QString data)
 
                     response.clear();
 
-                    if (m_settings->toolChangePause()) {
-                        QMessageBox::information(this, qApp->applicationDisplayName(),
-                            tr("Change tool and press 'Pause' button to continue job"));
-                    }
+                    if (m_settings->toolChangeAutoPause() && ca.tableIndex >= 0) {
+                        // Park, then wait. Do not run the legacy tool-change command list.
+                        beginToolChangeAutoPause(ca.tableIndex);
+                    } else {
+                        if (m_settings->toolChangePause()) {
+                            QMessageBox::information(this, qApp->applicationDisplayName(),
+                                tr("Change tool and press 'Pause' button to continue job"));
+                        }
 
-                    if (m_settings->toolChangeUseCommands()) {
-                        if (m_settings->toolChangeUseCommandsConfirm()) {
-                            QMessageBox box(this);
-                            box.setIcon(QMessageBox::Information);
-                            box.setText(tr("M6 command detected. Send tool change commands?\n"));
-                            box.setWindowTitle(qApp->applicationDisplayName());
-                            box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-                            box.setCheckBox(new QCheckBox(tr("Don't show again")));
-                            int res = box.exec();
-                            if (box.checkBox()->isChecked()) m_settings->setToolChangeUseCommandsConfirm(false);
-                            if (res == QMessageBox::Yes) {
+                        if (m_settings->toolChangeUseCommands()) {
+                            if (m_settings->toolChangeUseCommandsConfirm()) {
+                                QMessageBox box(this);
+                                box.setIcon(QMessageBox::Information);
+                                box.setText(tr("M6 command detected. Send tool change commands?\n"));
+                                box.setWindowTitle(qApp->applicationDisplayName());
+                                box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+                                box.setCheckBox(new QCheckBox(tr("Don't show again")));
+                                int res = box.exec();
+                                if (box.checkBox()->isChecked()) m_settings->setToolChangeUseCommandsConfirm(false);
+                                if (res == QMessageBox::Yes) {
+                                    sendCommands(m_settings->toolChangeCommands());
+                                }
+                            } else {
                                 sendCommands(m_settings->toolChangeCommands());
                             }
-                        } else {
-                            sendCommands(m_settings->toolChangeCommands());
                         }
-                    }
 
-                    setSenderState(SenderChangingTool);
-                    updateControlsState();
+                        setSenderState(SenderChangingTool);
+                        updateControlsState();
+                    }
                 }
                 if ((m_senderState == SenderChangingTool) && !m_settings->toolChangePause()
+                    && m_toolChangePhase == ToolChangeInactive
                     && m_commands.isEmpty())
                 {
                     setSenderState(SenderTransferring);
@@ -2624,6 +2665,15 @@ void frmMain::onConnectionDataReceived(QString data)
                         }
                     }
                 }
+
+                if (m_toolChangePhase != ToolChangeInactive
+                    && m_toolChangePhase != ToolChangeAwaitUser
+                    && m_toolChangePhase != ToolChangeFailed
+                    && (response.contains("error", Qt::CaseInsensitive)
+                        || response.contains("ALARM", Qt::CaseInsensitive))) {
+                    failToolChangeAutoPause(tr("The controller returned an error:\n%1").arg(response));
+                }
+                advanceToolChangeAutoPause();
 
                 // Emit response signal
                 emit responseReceived(ca.command, ca.tableIndex, response);
@@ -2712,6 +2762,7 @@ void frmMain::onConnectionConnected()
 
 void frmMain::onConnectionDisconnected()
 {
+    cancelToolChangeAutoPause();
     updateControlsState();
 }
 
@@ -3553,6 +3604,10 @@ void frmMain::storeSettings()
     set->setValue("toolChangePause", m_settings->toolChangePause());
     set->setValue("toolChangeUseCommands", m_settings->toolChangeUseCommands());
     set->setValue("toolChangeUseCommandsConfirm", m_settings->toolChangeUseCommandsConfirm());
+    set->setValue("toolChangeAutoPause", m_settings->toolChangeAutoPause());
+    set->setValue("toolChangeSafeZ", m_settings->toolChangeSafeZ());
+    set->setValue("toolChangeZTopClearance", m_settings->toolChangeZTopClearance());
+    set->setValue("toolChangeProbeOnResume", m_settings->toolChangeProbeOnResume());
     set->setValue("referenceXPlus", m_settings->referenceXPlus());
     set->setValue("referenceYPlus", m_settings->referenceYPlus());
     set->setValue("referenceZPlus", m_settings->referenceZPlus());
@@ -3734,6 +3789,10 @@ void frmMain::restoreSettings()
         m_settings->setToolChangePause(set->value("toolChangePause").toBool());
         m_settings->setToolChangeUseCommands(set->value("toolChangeUseCommands").toBool());
         m_settings->setToolChangeUseCommandsConfirm(set->value("toolChangeUseCommandsConfirm").toBool());
+        m_settings->setToolChangeAutoPause(set->value("toolChangeAutoPause", false).toBool());
+        m_settings->setToolChangeSafeZ(set->value("toolChangeSafeZ", 5).toDouble());
+        m_settings->setToolChangeZTopClearance(set->value("toolChangeZTopClearance", 1).toDouble());
+        m_settings->setToolChangeProbeOnResume(set->value("toolChangeProbeOnResume", true).toBool());
         m_settings->setReferenceXPlus(set->value("referenceXPlus", false).toBool());
         m_settings->setReferenceYPlus(set->value("referenceYPlus", false).toBool());
         m_settings->setReferenceZPlus(set->value("referenceZPlus", false).toBool());
@@ -4502,6 +4561,8 @@ void frmMain::loadPlugins()
 
 void frmMain::grblReset()
 {
+    cancelToolChangeAutoPause();
+    m_reportedSpindleSpeed = -1;
     m_currentConnection->send("\x18");
 
     setSenderState(SenderStopped);
@@ -4592,7 +4653,9 @@ frmMain::SendCommandResult frmMain::sendCommand(QString command, int tableIndex,
     static QRegExp M230("(M0*2|M30|M0*6|M25)(?!\\d)");
     static QRegExp M6("(M0*6)(?!\\d)");
     if ((m_senderState == SenderTransferring) && uncomment.contains(M230)) {
-        if (!uncomment.contains(M6) || m_settings->toolChangeUseCommands() || m_settings->toolChangePause()) setSenderState(SenderPausing);
+        bool fileToolChange = uncomment.contains(M6) && tableIndex >= 0 && m_settings->toolChangeAutoPause();
+        if (!uncomment.contains(M6) || m_settings->toolChangeUseCommands() || m_settings->toolChangePause()
+            || fileToolChange) setSenderState(SenderPausing);
     }
 
     // Queue offsets request on G92, G10 commands
@@ -5295,18 +5358,22 @@ void frmMain::updateControlsState() {
     ui->grpState->setEnabled(portOpened);
     ui->grpControl->setEnabled(portOpened);
     ui->widgetSpindle->setEnabled(portOpened);
-    ui->widgetJog->setEnabled(portOpened && ((m_senderState == SenderStopped)
-        || (m_senderState == SenderChangingTool)) && !m_sdRun);
-    ui->cboCommand->setEnabled(portOpened && (!ui->chkKeyboardControl->isChecked()));
-    ui->cmdCommandSend->setEnabled(portOpened);
+    bool legacyToolChange = (m_senderState == SenderChangingTool) && (m_toolChangePhase == ToolChangeInactive);
+    ui->widgetJog->setEnabled(portOpened && ((m_senderState == SenderStopped) || legacyToolChange) && !m_sdRun);
+    ui->cboCommand->setEnabled(portOpened && (!ui->chkKeyboardControl->isChecked())
+        && m_toolChangePhase == ToolChangeInactive);
+    ui->cmdCommandSend->setEnabled(portOpened && m_toolChangePhase == ToolChangeInactive);
 
     ui->cmdCheck->setEnabled(portOpened && !process);
-    ui->cmdHome->setEnabled(!process);
+    bool toolChangeBusy = m_toolChangePhase != ToolChangeInactive
+        && m_toolChangePhase != ToolChangeAwaitUser
+        && m_toolChangePhase != ToolChangeFailed;
+    ui->cmdHome->setEnabled(!process && m_toolChangePhase == ToolChangeInactive);
     ui->cmdCheck->setEnabled(!process);
     ui->cmdUnlock->setEnabled(!process);
-    ui->cmdSpindle->setEnabled(!process);
+    ui->cmdSpindle->setEnabled(!process && m_toolChangePhase == ToolChangeInactive);
     ui->slbSpindle->setEnabled(!m_sdRun);
-    ui->cmdSleep->setEnabled(!process);
+    ui->cmdSleep->setEnabled(!process && m_toolChangePhase == ToolChangeInactive);
 
     ui->actFileNew->setEnabled(m_senderState == SenderStopped);
     ui->actFileOpen->setEnabled(m_senderState == SenderStopped);
@@ -5316,7 +5383,8 @@ void frmMain::updateControlsState() {
     ui->cmdFileReset->setEnabled((m_senderState == SenderStopped) && m_programModel.rowCount() > 1 && !m_sdRun);
     ui->cmdFileSend->setEnabled(portOpened && (m_senderState == SenderStopped) && m_programModel.rowCount() > 1 && !m_sdRun);
     ui->cmdFileSendFromLine->setEnabled(ui->cmdFileSend->isEnabled() && !ui->cmdHeightMapMode->isChecked() && !m_sdRun);
-    ui->cmdFilePause->setEnabled(portOpened && (process || paused) && (m_senderState != SenderPausing) && !m_sdRun);
+    ui->cmdFilePause->setEnabled(portOpened && (process || paused) && (m_senderState != SenderPausing)
+        && !m_sdRun && !toolChangeBusy);
     ui->cmdFilePause->setChecked(paused);
     ui->cmdFileAbort->setEnabled(m_senderState != SenderStopped && m_senderState != SenderStopping && !m_sdRun);
     ui->mnuRecent->setEnabled((m_senderState == SenderStopped) && ((m_recentFiles.count() > 0 && !m_heightMapMode)
@@ -5338,7 +5406,10 @@ void frmMain::updateControlsState() {
         : m_programFileName.mid(m_programFileName.lastIndexOf("/") + 1) + " - " + m_currentProfileName
             + " - " + qApp->applicationDisplayName());
 
-    if (!process) ui->chkKeyboardControl->setChecked(m_storedKeyboardControl);
+    if (m_toolChangePhase != ToolChangeInactive)
+        ui->chkKeyboardControl->setChecked(false);
+    else if (!process)
+        ui->chkKeyboardControl->setChecked(m_storedKeyboardControl);
 
 #ifdef Q_OS_WIN
     if (QSysInfo::windowsVersion() >= QSysInfo::WV_WINDOWS7) {
@@ -6079,6 +6150,329 @@ bool frmMain::isHeightmapFile(QString fileName)
 int frmMain::buttonSize()
 {
     return ui->cmdHome->minimumWidth();
+}
+
+void frmMain::beginToolChangeAutoPause(int tableIndex)
+{
+    m_toolChangeLine = tableIndex;
+    m_toolChangePopupShown = false;
+    m_toolChangeExpectWorkZ = 0;
+    m_toolChangePhase = ToolChangeWaitStop;
+    m_toolChangeSettledAfterSample = m_statusSample;
+    setSenderState(SenderChangingTool);
+    updateControlsState();
+}
+
+void frmMain::cancelToolChangeAutoPause()
+{
+    m_toolChangePhase = ToolChangeInactive;
+    m_toolChangePopupShown = false;
+    m_toolChangeLine = -1;
+    m_toolChangeAdvancing = false;
+}
+
+void frmMain::failToolChangeAutoPause(const QString &reason)
+{
+    if (m_toolChangePhase == ToolChangeFailed || m_toolChangePhase == ToolChangeInactive)
+        return;
+
+    const int line = m_toolChangeLine;
+    m_toolChangePhase = ToolChangeFailed;
+    m_toolChangeAdvancing = false;
+    updateControlsState();
+    qApp->beep();
+
+    const QString text = line >= 0
+        ? tr("Tool change stopped at line %1.\n%2\nThe job was not resumed. Abort, fix the problem, and restart from this line.")
+            .arg(line + 1).arg(reason)
+        : tr("Tool change stopped.\n%1\nThe job was not resumed. Abort, fix the problem, and restart from this line.")
+            .arg(reason);
+
+    QTimer::singleShot(0, this, [this, text] {
+        QMessageBox::warning(this, qApp->applicationDisplayName(), text);
+    });
+}
+
+void frmMain::showToolChangePopup()
+{
+    if (m_toolChangePhase != ToolChangeAwaitUser || m_toolChangePopupShown)
+        return;
+    m_toolChangePopupShown = true;
+
+    QString command;
+    if (m_currentModel && m_toolChangeLine >= 0 && m_toolChangeLine < m_currentModel->rowCount() - 1)
+        command = QString::fromUtf8(m_currentModel->data().at(m_toolChangeLine).command);
+
+    QString text = tr("Paused: tool change (M6) at line %1.").arg(m_toolChangeLine + 1);
+    if (!command.trimmed().isEmpty())
+        text += "\n" + command.trimmed();
+    text += "\n\n" + tr("The spindle is off. X/Y are at work home (X0 Y0). Z is raised to the top of travel.");
+    text += "\n" + tr("Change the bit, then press the Pause button to resume.");
+    text += "\n" + tr("The job will not resume until you press Pause.");
+    if (m_settings->toolChangeProbeOnResume()) {
+        text += "\n\n" + tr("Resume moves to the saved work X/Y, re-probes Z there, and does not change X/Y work offsets.");
+    } else {
+        text += "\n\n" + tr("Resume returns to the saved work X/Y without probing and without changing X/Y work offsets.");
+    }
+
+    qApp->beep();
+    QMessageBox::information(this, qApp->applicationDisplayName(), text);
+}
+
+bool frmMain::toolChangeUseInches() const
+{
+    static QRegExp g20("G20(?!\\d)");
+    static QRegExp g21("G21(?!\\d)");
+    if (g20.indexIn(m_toolChangeParserState) != -1)
+        return true;
+    if (g21.indexIn(m_toolChangeParserState) != -1)
+        return false;
+    return m_settings->units() != 0;
+}
+
+double frmMain::toolChangeTolerance() const
+{
+    return toolChangeUseInches() ? 0.002 : 0.05;
+}
+
+QString frmMain::formatToolChangeCoord(double value) const
+{
+    return QString::number(value, 'f', toolChangeUseInches() ? 4 : 3);
+}
+
+double frmMain::toolChangeParkZTarget()
+{
+    // $22=1 means the machine was homed and G53 Z0 is the top of Z travel.
+    // Anything else (setting not read, or homing off) has no known top, so park at G53 Z0.
+    // The returned value is the G53 Z word in the active program units. The stored
+    // park position is in status-report units ($13), which is what txtMPos shows.
+    const QMap<int, float> settings = m_settings->deviceSettings();
+    const bool homing = settings.contains(22) && settings.value(22) != 0.0f;
+    const double targetMm = homing ? -qMax(0.0, m_settings->toolChangeZTopClearance()) : 0.0;
+    m_toolChangeParkMachineZ = m_settings->units() == 0 ? targetMm : targetMm / 25.4;
+    return toolChangeUseInches() ? targetMm / 25.4 : targetMm;
+}
+
+QString frmMain::toolChangeProbeCommands()
+{
+    // Candle's built-in "Probe Z" user command: fast probe, retract, slow probe,
+    // G92 Z only, then a short retract. No X/Y words, so X/Y work offsets stay put.
+    // The fast stroke is extended so a probe that starts near the top of travel
+    // still searches about 30 mm past work Z0.
+    const bool inches = toolChangeUseInches();
+    const double scale = inches ? (1.0 / 25.4) : 1.0;
+    auto coord = [scale, inches](double mm) {
+        return QString::number(mm * scale, 'f', inches ? 4 : 3);
+    };
+
+    // txtWPos is in status-report units. The plunge distance is in the units
+    // the probe command selects, and it must still reach about 30 mm past work Z0.
+    double workZMm = toMetric(ui->txtWPosZ->value());
+    if (workZMm < 0)
+        workZMm = 0;
+    const double fastMm = qMax(30.0, workZMm + 30.0);
+
+    m_toolChangeExpectWorkZ = m_settings->units() == 0 ? 5.0 : 5.0 / 25.4;
+
+    return QString("%1G91\nG38.2Z-%2F%3\nG0Z%4\nG38.2Z-%5F%6\nG92Z0\nG91G0Z%7")
+        .arg(inches ? "G20" : "G21")
+        .arg(coord(fastMm))
+        .arg(coord(100))
+        .arg(coord(1))
+        .arg(coord(2))
+        .arg(coord(10))
+        .arg(coord(5));
+}
+
+void frmMain::sendToolChangeReturnXY()
+{
+    sendToolChangeCommand(QString("G90G0X%1Y%2")
+        .arg(formatToolChangeCoord(m_toolChangeWorkX))
+        .arg(formatToolChangeCoord(m_toolChangeWorkY)));
+}
+
+void frmMain::sendToolChangeCommand(const QString &command)
+{
+    sendCommand(command, -1, m_settings->showUICommands());
+    m_toolChangeSettledAfterSample = m_statusSample;
+}
+
+bool frmMain::toolChangePositionReached() const
+{
+    const double tol = toolChangeTolerance();
+    // Park Z and the post-probe Z are checked against the status report ($13).
+    const double reportTol = m_settings->units() == 0 ? 0.05 : 0.002;
+    switch (m_toolChangePhase) {
+    case ToolChangeLiftZ:
+        return qAbs(ui->txtWPosZ->value() - m_settings->toolChangeSafeZ()) <= tol;
+    case ToolChangeGoHome:
+        return qAbs(ui->txtWPosX->value()) <= tol && qAbs(ui->txtWPosY->value()) <= tol;
+    case ToolChangeRaiseParkZ:
+        return qAbs(ui->txtMPosZ->value() - m_toolChangeParkMachineZ) <= reportTol;
+    case ToolChangeProbe:
+        return qAbs(ui->txtWPosZ->value() - m_toolChangeExpectWorkZ) <= reportTol;
+    case ToolChangeMoveToProbe:
+    case ToolChangeReturnXY:
+        return qAbs(ui->txtWPosX->value() - m_toolChangeWorkX) <= tol
+            && qAbs(ui->txtWPosY->value() - m_toolChangeWorkY) <= tol;
+    default:
+        return true;
+    }
+}
+
+bool frmMain::toolChangeStepSettled() const
+{
+    if (!m_commands.isEmpty() || !m_queue.isEmpty())
+        return false;
+
+    const bool checkMode = m_deviceState == DeviceCheck;
+    if (m_deviceState != DeviceIdle && !checkMode)
+        return false;
+
+    if (m_toolChangePhase == ToolChangeWaitStop)
+        return true;
+
+    // A status from before this step was sent is not proof the motion finished.
+    if (m_statusSample <= m_toolChangeSettledAfterSample)
+        return false;
+
+    if (m_toolChangePhase == ToolChangeSpindleOff || m_toolChangePhase == ToolChangeResumeM5) {
+        // Check mode does not spin the motor. A real run waits until the status speed is 0.
+        if (checkMode)
+            return true;
+        return m_reportedSpindleSpeed <= 0;
+    }
+
+    if (checkMode)
+        return true;
+
+    return toolChangePositionReached();
+}
+
+void frmMain::startToolChangeResume()
+{
+    if (m_toolChangePhase != ToolChangeAwaitUser)
+        return;
+
+    if (m_deviceState == DeviceAlarm) {
+        failToolChangeAutoPause(tr("The controller is in alarm. Reset it, then abort and restart from this line."));
+        return;
+    }
+
+    // Spindle off again before any resume motion, including the probe.
+    m_toolChangePhase = ToolChangeResumeM5;
+    updateControlsState();
+    sendToolChangeCommand("M5");
+}
+
+void frmMain::finishToolChangeAutoPause()
+{
+    m_toolChangePhase = ToolChangeInactive;
+    m_toolChangePopupShown = false;
+    m_toolChangeLine = -1;
+    m_toolChangeAdvancing = false;
+    setSenderState(SenderTransferring);
+    updateControlsState();
+    sendNextFileCommands();
+}
+
+void frmMain::advanceToolChangeAutoPause()
+{
+    if (m_toolChangeAdvancing)
+        return;
+    if (m_toolChangePhase == ToolChangeInactive
+        || m_toolChangePhase == ToolChangeAwaitUser
+        || m_toolChangePhase == ToolChangeFailed)
+        return;
+
+    m_toolChangeAdvancing = true;
+
+    if (m_deviceState == DeviceAlarm) {
+        m_toolChangeAdvancing = false;
+        failToolChangeAutoPause(tr("The controller is in alarm. The job was not resumed."));
+        return;
+    }
+
+    if (!toolChangeStepSettled()) {
+        m_toolChangeAdvancing = false;
+        return;
+    }
+
+    switch (m_toolChangePhase) {
+    case ToolChangeWaitStop: {
+        const QString previousParserState = m_storedParserStatus;
+        storeParserState();
+        if (m_storedParserStatus.trimmed().isEmpty())
+            m_storedParserStatus = previousParserState;
+        m_toolChangeParserState = m_storedParserStatus;
+        m_toolChangeWorkX = ui->txtWPosX->value();
+        m_toolChangeWorkY = ui->txtWPosY->value();
+        m_toolChangePhase = ToolChangeSpindleOff;
+        sendToolChangeCommand("M5");
+        break;
+    }
+    case ToolChangeSpindleOff:
+        // Never lower Z to reach Safe Z. Already-high Z stays put so the bit
+        // does not drag across the board on the way to work X0 Y0.
+        if (ui->txtWPosZ->value() < m_settings->toolChangeSafeZ() - toolChangeTolerance()) {
+            m_toolChangePhase = ToolChangeLiftZ;
+            sendToolChangeCommand(QString("G90G0Z%1")
+                .arg(formatToolChangeCoord(m_settings->toolChangeSafeZ())));
+        } else {
+            m_toolChangePhase = ToolChangeGoHome;
+            sendToolChangeCommand("G90G0X0Y0");
+        }
+        break;
+    case ToolChangeLiftZ:
+        m_toolChangePhase = ToolChangeGoHome;
+        sendToolChangeCommand("G90G0X0Y0");
+        break;
+    case ToolChangeGoHome:
+        m_toolChangePhase = ToolChangeRaiseParkZ;
+        sendToolChangeCommand(QString("G53G90G0Z%1")
+            .arg(formatToolChangeCoord(toolChangeParkZTarget())));
+        break;
+    case ToolChangeRaiseParkZ:
+        m_toolChangePhase = ToolChangeAwaitUser;
+        updateControlsState();
+        m_toolChangeAdvancing = false;
+        QMetaObject::invokeMethod(this, "showToolChangePopup", Qt::QueuedConnection);
+        return;
+    case ToolChangeResumeM5:
+        // Probe at the saved work X/Y, not at work home. Z stays at the park
+        // height for this move so the bit clears the board.
+        if (m_settings->toolChangeProbeOnResume())
+            m_toolChangePhase = ToolChangeMoveToProbe;
+        else
+            m_toolChangePhase = ToolChangeReturnXY;
+        sendToolChangeReturnXY();
+        break;
+    case ToolChangeMoveToProbe:
+        m_toolChangePhase = ToolChangeProbe;
+        sendCommands(toolChangeProbeCommands(), -1);
+        m_toolChangeSettledAfterSample = m_statusSample;
+        break;
+    case ToolChangeProbe:
+        m_toolChangePhase = ToolChangeReturnXY;
+        sendToolChangeReturnXY();
+        break;
+    case ToolChangeReturnXY:
+        if (!m_toolChangeParserState.trimmed().isEmpty()) {
+            m_toolChangePhase = ToolChangeRestore;
+            sendToolChangeCommand(m_toolChangeParserState.trimmed());
+        } else {
+            finishToolChangeAutoPause();
+            return;
+        }
+        break;
+    case ToolChangeRestore:
+        finishToolChangeAutoPause();
+        return;
+    default:
+        break;
+    }
+
+    m_toolChangeAdvancing = false;
 }
 
 void frmMain::setSenderState(SenderState state)
